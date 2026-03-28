@@ -6,7 +6,6 @@ import {
   doc, 
   setDoc, 
   onSnapshot, 
-  query, 
   getDoc 
 } from 'firebase/firestore';
 import { 
@@ -34,12 +33,35 @@ import {
   RefreshCw
 } from 'lucide-react';
 
-// Configuración de Firebase (proporcionada por el entorno)
-const firebaseConfig = JSON.parse(__firebase_config);
+// --- CONFIGURACIÓN COMPATIBLE (PREVIEW + PRODUCCIÓN) ---
+const getFirebaseConfig = () => {
+  try {
+    // Intenta usar la configuración del entorno de previsualización
+    if (typeof __firebase_config !== 'undefined') {
+      return JSON.parse(__firebase_config);
+    }
+    // Fallback para Vercel/Netlify usando Vite
+    return JSON.parse(import.meta.env.VITE_FIREBASE_CONFIG || '{}');
+  } catch (e) {
+    return {};
+  }
+};
+
+const getAppId = () => {
+  if (typeof __app_id !== 'undefined') return __app_id;
+  try {
+    return import.meta.env.VITE_APP_ID || 'habitos-shared-v1';
+  } catch (e) {
+    return 'habitos-shared-v1';
+  }
+};
+
+const firebaseConfig = getFirebaseConfig();
+const appId = getAppId();
+
 const app = initializeApp(firebaseConfig);
 const auth = getAuth(app);
 const db = getFirestore(app);
-const appId = typeof __app_id !== 'undefined' ? __app_id : 'habitos-shared-v1';
 
 const App = () => {
   const [user, setUser] = useState(null);
@@ -58,10 +80,10 @@ const App = () => {
 
   const daysOfWeek = ['L', 'M', 'X', 'J', 'V', 'S', 'D'];
 
-  // 1. Autenticación inicial
   useEffect(() => {
     const initAuth = async () => {
       try {
+        // Soporte para token inicial del sistema o login anónimo
         if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
           await signInWithCustomToken(auth, __initial_auth_token);
         } else {
@@ -76,7 +98,6 @@ const App = () => {
     const unsubscribe = onAuthStateChanged(auth, (u) => {
       setUser(u);
       if (u) {
-        // Cargar nombre guardado o poner uno por defecto
         loadUserName(u.uid);
       }
     });
@@ -92,12 +113,9 @@ const App = () => {
     }
   };
 
-  // 2. Sincronización de datos del usuario
   useEffect(() => {
     if (!user) return;
-
     const habitsRef = doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current');
-    
     const unsub = onSnapshot(habitsRef, (docSnap) => {
       if (docSnap.exists()) {
         const data = docSnap.data();
@@ -107,53 +125,49 @@ const App = () => {
       }
       setIsLoading(false);
     }, (err) => {
-      console.error("Error cargando datos:", err);
       setIsLoading(false);
     });
-
     return () => unsub();
   }, [user]);
 
-  // 3. Sincronización de la Comunidad
   useEffect(() => {
     if (!user) return;
-
     const communityRef = collection(db, 'artifacts', appId, 'public', 'data', 'users');
     const unsub = onSnapshot(communityRef, (querySnapshot) => {
       const progress = [];
       querySnapshot.forEach((doc) => {
-        if (doc.id !== user.uid) { // No mostrarse a uno mismo en la lista
+        if (doc.id !== user.uid) {
           progress.push({ id: doc.id, ...doc.data() });
         }
       });
       setCommunityProgress(progress);
     });
-
     return () => unsub();
   }, [user]);
 
-  // 4. Guardar cambios y actualizar perfil público
   const saveData = async (updatedHabits, updatedGoals, updatedHistory) => {
     if (!user) return;
+    
+    const h = updatedHabits || habits;
+    const g = updatedGoals || goals;
+    const hist = updatedHistory || history;
 
-    // Guardar datos privados
     await setDoc(doc(db, 'artifacts', appId, 'users', user.uid, 'settings', 'current'), {
-      habits: updatedHabits || habits,
-      goals: updatedGoals || goals,
-      history: updatedHistory || history,
+      habits: h,
+      goals: g,
+      history: hist,
       lastUpdate: Date.now()
     });
 
-    // Actualizar perfil público para la comunidad
-    const metHabits = (updatedHabits || habits).filter(h => getCompletedCount(h.completed) >= h.targetDays).length;
-    const metGoals = (updatedGoals || goals).filter(g => g.completed).length;
-    const totalItems = (updatedHabits || habits).length + (updatedGoals || goals).length;
+    const metHabits = h.filter(habit => getCompletedCount(habit.completed) >= habit.targetDays).length;
+    const metGoals = g.filter(goal => goal.completed).length;
+    const totalItems = h.length + g.length;
     const score = Math.round(((metHabits + metGoals) / (totalItems || 1)) * 100);
 
     await setDoc(doc(db, 'artifacts', appId, 'public', 'data', 'users', user.uid), {
-      displayName: userName,
+      displayName: userName || `Usuario ${user.uid.substring(0, 4)}`,
       score: score,
-      habitsCount: (updatedHabits || habits).length,
+      habitsCount: h.length,
       metHabits: metHabits,
       lastActive: Date.now()
     });
@@ -253,34 +267,27 @@ const App = () => {
 
   return (
     <div className="min-h-screen bg-slate-50 text-slate-900 font-sans pb-28">
-      {/* Header */}
       <header className="bg-indigo-600 text-white p-6 shadow-lg rounded-b-3xl">
         <div className="flex justify-between items-start">
           <div>
             <h1 className="text-2xl font-bold flex items-center gap-2">
               <Award className="w-8 h-8" /> Mi Progreso
             </h1>
-            <div className="flex items-center gap-2 mt-1">
-               <input 
-                value={userName}
-                onChange={(e) => setUserName(e.target.value)}
-                onBlur={() => saveData()}
-                className="bg-indigo-700/50 border-none text-indigo-100 text-xs px-2 py-1 rounded focus:ring-1 focus:ring-white outline-none w-32"
-                placeholder="Tu nombre..."
-               />
-            </div>
+            <input 
+              value={userName}
+              onChange={(e) => setUserName(e.target.value)}
+              onBlur={() => saveData()}
+              className="bg-indigo-700/50 border-none text-indigo-100 text-xs px-2 py-1 rounded focus:ring-1 focus:ring-white outline-none w-32 mt-2"
+              placeholder="Tu nombre..."
+            />
           </div>
-          <button 
-            onClick={() => setShowConfirmFinish(true)}
-            className="bg-white/20 hover:bg-white/30 p-2 rounded-full transition-colors"
-          >
+          <button onClick={() => setShowConfirmFinish(true)} className="bg-white/20 p-2 rounded-full hover:bg-white/30 transition-colors">
             <Archive className="w-5 h-5" />
           </button>
         </div>
       </header>
 
       <main className="max-w-md mx-auto p-4 space-y-6">
-        {/* Navigation Tabs */}
         <div className="flex bg-white p-1 rounded-xl shadow-sm border border-slate-200 sticky top-4 z-10">
           {[
             { id: 'habitos', icon: Calendar, label: 'Hoy' },
@@ -301,28 +308,26 @@ const App = () => {
           ))}
         </div>
 
-        {/* Modal Finish Week */}
         {showConfirmFinish && (
           <div className="fixed inset-0 bg-black/50 flex items-center justify-center z-50 p-6">
-            <div className="bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl space-y-4">
-              <h3 className="text-lg font-bold text-slate-800 text-center">¿Cerrar semana?</h3>
-              <p className="text-sm text-slate-500 text-center">Tu progreso se guardará en la nube y se resetearán tus círculos.</p>
+            <div className="bg-white rounded-2xl p-6 w-full max-w-xs shadow-2xl space-y-4 text-center">
+              <h3 className="text-lg font-bold">¿Cerrar semana?</h3>
+              <p className="text-sm text-slate-500">Se guardará tu progreso y se resetearán los círculos.</p>
               <div className="flex gap-3">
-                <button onClick={() => setShowConfirmFinish(false)} className="flex-1 py-3 rounded-xl bg-slate-100 font-bold text-slate-600">No</button>
+                <button onClick={() => setShowConfirmFinish(false)} className="flex-1 py-3 rounded-xl bg-slate-100 font-bold">No</button>
                 <button onClick={finishWeek} className="flex-1 py-3 rounded-xl bg-indigo-600 font-bold text-white shadow-lg">Sí, archivar</button>
               </div>
             </div>
           </div>
         )}
 
-        {/* Content: HABITS */}
         {activeTab === 'habitos' && (
-          <div className="space-y-4 animate-in slide-in-from-left-2 duration-300">
+          <div className="space-y-4">
             <form onSubmit={handleAddHabit} className="bg-white p-4 rounded-2xl shadow-sm border border-slate-100 space-y-3">
               <input 
                 type="text" placeholder="Nuevo hábito..." 
                 value={newHabitName} onChange={(e) => setNewHabitName(e.target.value)}
-                className="w-full p-3 rounded-xl border border-slate-200 focus:outline-none focus:ring-2 focus:ring-indigo-500 bg-slate-50"
+                className="w-full p-3 rounded-xl border border-slate-200 bg-slate-50 outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <div className="flex items-center gap-3">
                 <span className="text-xs font-bold text-slate-500">META:</span>
@@ -339,59 +344,58 @@ const App = () => {
 
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 divide-y divide-slate-100 overflow-hidden">
               {habits.length === 0 ? (
-                <p className="p-8 text-center text-slate-400 italic text-sm">Sin hábitos activos.</p>
-              ) : (
-                habits.map(habit => {
-                  const completedCount = getCompletedCount(habit.completed);
-                  const isGoalMet = completedCount >= habit.targetDays;
-                  return (
-                    <div key={habit.id} className="p-4 space-y-3">
-                      <div className="flex justify-between items-start">
-                        <div>
-                          <h3 className="font-semibold text-slate-800">{habit.name}</h3>
-                          <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isGoalMet ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
-                            {completedCount}/{habit.targetDays} días
-                          </span>
-                        </div>
-                        <button onClick={() => deleteHabit(habit.id)} className="text-slate-200 hover:text-red-400"><Trash2 className="w-4 h-4" /></button>
+                <p className="p-8 text-center text-slate-400 text-sm italic">No hay hábitos aún.</p>
+              ) : habits.map(habit => {
+                const completedCount = getCompletedCount(habit.completed);
+                const isGoalMet = completedCount >= habit.targetDays;
+                return (
+                  <div key={habit.id} className="p-4 space-y-3">
+                    <div className="flex justify-between items-start">
+                      <div>
+                        <h3 className="font-semibold">{habit.name}</h3>
+                        <span className={`text-[9px] font-black uppercase px-1.5 py-0.5 rounded ${isGoalMet ? 'bg-emerald-100 text-emerald-700' : 'bg-slate-100 text-slate-500'}`}>
+                          {completedCount}/{habit.targetDays} días
+                        </span>
                       </div>
-                      <div className="flex justify-between items-center px-1">
-                        {daysOfWeek.map((day, idx) => (
-                          <div key={idx} className="flex flex-col items-center gap-1.5">
-                            <span className="text-[10px] font-bold text-slate-300">{day}</span>
-                            <button 
-                              onClick={() => toggleHabitDay(habit.id, idx)}
-                              className={`w-9 h-9 rounded-xl flex items-center justify-center transition-all border-2 ${
-                                habit.completed[idx] ? 'bg-emerald-500 border-emerald-500 text-white shadow-md' : 'bg-white border-slate-100'
-                              }`}
-                            >
-                              {habit.completed[idx] && <CheckCircle2 className="w-5 h-5" />}
-                            </button>
-                          </div>
-                        ))}
-                      </div>
+                      <button onClick={() => deleteHabit(habit.id)} className="text-slate-200 hover:text-red-500"><Trash2 className="w-4 h-4" /></button>
                     </div>
-                  );
-                })
-              )}
+                    <div className="flex justify-between items-center px-1">
+                      {daysOfWeek.map((day, idx) => (
+                        <div key={idx} className="flex flex-col items-center gap-1.5">
+                          <span className="text-[10px] font-bold text-slate-300">{day}</span>
+                          <button 
+                            onClick={() => toggleHabitDay(habit.id, idx)}
+                            className={`w-9 h-9 rounded-xl flex items-center justify-center border-2 transition-all ${
+                              habit.completed[idx] ? 'bg-emerald-500 border-emerald-500 text-white shadow-md' : 'bg-white border-slate-100'
+                            }`}
+                          >
+                            {habit.completed[idx] && <CheckCircle2 className="w-5 h-5" />}
+                          </button>
+                        </div>
+                      ))}
+                    </div>
+                  </div>
+                );
+              })}
             </div>
           </div>
         )}
 
-        {/* Content: GOALS */}
         {activeTab === 'objetivos' && (
-          <div className="space-y-4 animate-in slide-in-from-left-2 duration-300">
+          <div className="space-y-4">
             <form onSubmit={handleAddGoal} className="flex gap-2">
               <input 
                 type="text" placeholder="Meta semanal..." value={newGoalText}
                 onChange={(e) => setNewGoalText(e.target.value)}
-                className="flex-1 p-3 rounded-xl border border-slate-200 bg-white"
+                className="flex-1 p-3 rounded-xl border border-slate-200 bg-white outline-none focus:ring-2 focus:ring-indigo-500"
               />
               <button type="submit" className="bg-indigo-600 text-white p-3 rounded-xl"><Plus className="w-6 h-6" /></button>
             </form>
             <div className="bg-white rounded-2xl shadow-sm border border-slate-100 divide-y divide-slate-100">
-              {goals.map(goal => (
-                <div key={goal.id} className="flex items-center gap-3 p-4 group">
+              {goals.length === 0 ? (
+                <p className="p-8 text-center text-slate-400 text-sm italic">Define tus metas de la semana.</p>
+              ) : goals.map(goal => (
+                <div key={goal.id} className="flex items-center gap-3 p-4">
                   <button onClick={() => toggleGoal(goal.id)} className={`transition-all ${goal.completed ? 'text-emerald-500' : 'text-slate-200'}`}>
                     {goal.completed ? <CheckSquare className="w-7 h-7" /> : <Circle className="w-7 h-7" />}
                   </button>
@@ -403,54 +407,35 @@ const App = () => {
           </div>
         )}
 
-        {/* Content: COMMUNITY */}
         {activeTab === 'comunidad' && (
-          <div className="space-y-4 animate-in slide-in-from-right-2 duration-300">
-            <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 flex items-center gap-3">
-              <div className="bg-white p-2 rounded-full text-indigo-600"><Users className="w-5 h-5" /></div>
-              <div>
-                <h2 className="text-sm font-bold text-indigo-900">Progreso de Amigos</h2>
-                <p className="text-[10px] text-indigo-600 font-medium">Mira cómo van los demás esta semana</p>
-              </div>
+          <div className="space-y-3">
+             <div className="bg-indigo-50 p-4 rounded-2xl border border-indigo-100 mb-2">
+              <p className="text-xs text-indigo-700 font-medium text-center">¡Compite con tus amigos! Los demás verán tu porcentaje de éxito semanal.</p>
             </div>
-
-            <div className="space-y-3">
-              {communityProgress.length === 0 ? (
-                <p className="text-center p-8 text-slate-400 text-sm">Aún no hay otros usuarios activos.</p>
-              ) : (
-                communityProgress.sort((a,b) => b.score - a.score).map((other) => (
-                  <div key={other.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
-                    <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400">
-                      <User className="w-6 h-6" />
-                    </div>
-                    <div className="flex-1">
-                      <div className="flex justify-between items-center mb-1">
-                        <span className="font-bold text-slate-700 text-sm">{other.displayName}</span>
-                        <span className="text-xs font-black text-indigo-600">{other.score}%</span>
-                      </div>
-                      <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
-                        <div 
-                          className="h-full bg-indigo-500 transition-all duration-1000"
-                          style={{ width: `${other.score}%` }}
-                        />
-                      </div>
-                      <div className="mt-1.5 flex gap-2">
-                        <span className="text-[9px] font-bold text-slate-400 uppercase tracking-tighter">
-                          {other.metHabits} hábitos logrados
-                        </span>
-                      </div>
-                    </div>
+            {communityProgress.length === 0 ? (
+              <p className="p-8 text-center text-slate-400 text-sm italic">No hay otros usuarios activos aún.</p>
+            ) : communityProgress.sort((a,b) => b.score - a.score).map((other) => (
+              <div key={other.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm flex items-center gap-4">
+                <div className="w-10 h-10 rounded-full bg-slate-100 flex items-center justify-center text-slate-400"><User className="w-6 h-6" /></div>
+                <div className="flex-1">
+                  <div className="flex justify-between items-center mb-1">
+                    <span className="font-bold text-slate-700 text-sm">{other.displayName}</span>
+                    <span className="text-xs font-black text-indigo-600">{other.score}%</span>
                   </div>
-                ))
-              )}
-            </div>
+                  <div className="w-full h-2 bg-slate-100 rounded-full overflow-hidden">
+                    <div className="h-full bg-indigo-500 transition-all duration-500" style={{ width: `${other.score}%` }} />
+                  </div>
+                </div>
+              </div>
+            ))}
           </div>
         )}
 
-        {/* Content: HISTORY */}
         {activeTab === 'historial' && (
-          <div className="space-y-3 animate-in slide-in-from-right-2 duration-300">
-            {history.map(item => (
+          <div className="space-y-3">
+            {history.length === 0 ? (
+              <p className="p-8 text-center text-slate-400 text-sm italic">Tu historial aparecerá aquí al finalizar la semana.</p>
+            ) : history.map(item => (
               <div key={item.id} className="bg-white p-4 rounded-2xl border border-slate-100 shadow-sm">
                 <div className="flex justify-between items-center">
                   <div>
@@ -468,8 +453,7 @@ const App = () => {
         )}
       </main>
 
-      {/* Footer Summary */}
-      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 flex justify-around text-xs font-medium text-slate-500 shadow-[0_-4px_15px_rgba(0,0,0,0.08)]">
+      <div className="fixed bottom-0 left-0 right-0 bg-white border-t border-slate-200 p-4 flex justify-around text-xs font-medium text-slate-500 shadow-lg z-20">
         <div className="flex flex-col items-center">
           <span className="text-indigo-600 text-lg font-black">{habits.length}</span>
           <span className="uppercase tracking-wider text-[9px] font-bold">Míos</span>
@@ -478,7 +462,7 @@ const App = () => {
           <span className="text-emerald-600 text-lg font-black">
             {habits.filter(h => getCompletedCount(h.completed) >= h.targetDays).length}
           </span>
-          <span className="uppercase tracking-wider text-[9px] font-bold text-emerald-600">Completos</span>
+          <span className="uppercase tracking-wider text-[9px] font-bold text-emerald-600">Cumplidos</span>
         </div>
         <div className="flex flex-col items-center">
           <span className="text-indigo-600 text-lg font-black">{communityProgress.length}</span>
